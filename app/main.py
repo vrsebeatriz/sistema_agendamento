@@ -7,6 +7,7 @@ from app.routers import services
 from app.routers import appointments
 from app.routers import business_hours, time_blocks
 from app.routers import dashboard
+from app.routers import payments
 
 app = FastAPI()
 app.include_router(users.router)
@@ -16,6 +17,7 @@ app.include_router(appointments.router)
 app.include_router(business_hours.router)
 app.include_router(time_blocks.router)
 app.include_router(dashboard.router)
+app.include_router(payments.router)
 
 
 @app.on_event("startup")

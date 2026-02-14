@@ -11,15 +11,12 @@ from app.models.appointment import Appointment
 from app.models.service import Service
 from app.models.business_hours import BusinessHours
 
-
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
-
 
 def _day_bounds(d: date):
     start = datetime.combine(d, time(0, 0))
     end = start + timedelta(days=1)
     return start, end
-
 
 @router.get("/summary")
 def dashboard_summary(
@@ -37,27 +34,18 @@ def dashboard_summary(
         )
     ).all()
 
-    # métricas
     total = len(appts)
     by_status = Counter([a.status for a in appts])
 
-    # receita: só completed (produto real)
     revenue = 0.0
     minutes_completed = 0
 
-    service_ids = [a.service_id for a in appts]
-    services = session.exec(select(Service).where(Service.id.in_(service_ids))).all()
-    service_map = {s.id: s for s in services}
-
     for a in appts:
-        s = service_map.get(a.service_id)
-        if not s:
-            continue
         if a.status == "completed":
-            revenue += float(s.price)
-            minutes_completed += int(s.duration_minutes)
+            revenue += float(a.service_price_snapshot or 0)
+            minutes_completed += int(a.service_duration_snapshot or 0)
 
-    # ocupação: compara minutos ocupados com expediente do dia (se houver)
+    # ocupação
     weekday = day.weekday()
     bh = session.exec(
         select(BusinessHours).where(
@@ -74,7 +62,6 @@ def dashboard_summary(
         close_dt = datetime.combine(day, bh.close_time)
         capacity_minutes = int((close_dt - open_dt).total_seconds() // 60)
 
-        # tira almoço da capacidade
         if bh.lunch_start and bh.lunch_end:
             ls = datetime.combine(day, bh.lunch_start)
             le = datetime.combine(day, bh.lunch_end)
@@ -83,13 +70,15 @@ def dashboard_summary(
         if capacity_minutes > 0:
             occupancy = round((minutes_completed / capacity_minutes) * 100, 2)
 
-    # top serviços (por quantidade de agendamentos do dia)
-    top_counter = Counter(service_ids)
-    top = []
-    for sid, qty in top_counter.most_common(5):
-        s = service_map.get(sid)
-        if s:
-            top.append({"service_id": sid, "name": s.name, "count": qty})
+    # top serviços usando snapshot
+    service_counter = Counter(
+        [a.service_name_snapshot for a in appts if a.service_name_snapshot]
+    )
+
+    top = [
+        {"name": name, "count": qty}
+        for name, qty in service_counter.most_common(5)
+    ]
 
     return {
         "day": day.isoformat(),
@@ -101,4 +90,82 @@ def dashboard_summary(
         "capacity_minutes": capacity_minutes,
         "occupancy_percent": occupancy,
         "top_services": top,
+    }
+
+@router.get("/monthly")
+def monthly_dashboard(
+    year: int,
+    month: int,
+    session: Session = Depends(get_session),
+    current_barber: User = Depends(get_current_barber),
+):
+    from calendar import monthrange
+
+    last_day = monthrange(year, month)[1]
+
+    start = datetime(year, month, 1, 0, 0)
+    end = datetime(year, month, last_day, 23, 59, 59)
+
+    appts = session.exec(
+        select(Appointment).where(
+            Appointment.barber_id == current_barber.id,
+            Appointment.appointment_time >= start,
+            Appointment.appointment_time <= end,
+        )
+    ).all()
+
+    total_completed = 0
+    total_canceled = 0
+    gross_revenue = 0.0
+    paid_revenue = 0.0
+    unpaid_revenue = 0.0
+
+    service_counter = Counter()
+    revenue_by_day = {}
+
+    for appt in appts:
+
+        if appt.status == "completed":
+            total_completed += 1
+            price = float(appt.service_price_snapshot or 0)
+            gross_revenue += price
+
+            service_counter[appt.service_name_snapshot] += 1
+
+            day_key = appt.appointment_time.date().isoformat()
+            revenue_by_day.setdefault(day_key, 0)
+            revenue_by_day[day_key] += price
+
+            if appt.payment_status == "paid":
+                paid_revenue += price
+            else:
+                unpaid_revenue += price
+
+        if appt.status == "canceled":
+            total_canceled += 1
+
+    ticket_medio = (
+        round(gross_revenue / total_completed, 2)
+        if total_completed > 0
+        else 0
+    )
+
+    top_services = [
+        {"service": name, "quantity": qty}
+        for name, qty in service_counter.most_common(5)
+    ]
+
+    return {
+        "period": {
+            "year": year,
+            "month": month,
+        },
+        "appointments_completed": total_completed,
+        "appointments_canceled": total_canceled,
+        "gross_revenue": round(gross_revenue, 2),
+        "paid_revenue": round(paid_revenue, 2),
+        "unpaid_revenue": round(unpaid_revenue, 2),
+        "ticket_average": ticket_medio,
+        "top_services": top_services,
+        "revenue_by_day": revenue_by_day,
     }
