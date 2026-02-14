@@ -177,7 +177,5 @@ Crie seu ambiente virtual: python -m venv venv
 # 🚀 Futuras Evoluções
 
 - Dashboard financeiro
-- Relatórios de ocupação
-- Sistema multi-barbearia
 - Integração com pagamento online
 - Notificação por WhatsApp
